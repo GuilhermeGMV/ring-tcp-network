@@ -1,17 +1,20 @@
 from dataclasses import dataclass
 
 @dataclass
-class Config:
+class Node:
     nickname: str
     token_data_time: float
     error_probability: float
     token_timeout: float
     min_token_interval: float
 
-def load_config(path: str) -> Config:
+    def start(self):
+        print(f"Node {self.nickname} started with config: {self}")
+
+def create_node(path: str) -> Node:
     with open(path, 'r') as f:
         lines = f.read().splitlines()
-        return Config(
+        return Node(
             nickname=lines[0].strip(),
             token_data_time=float(lines[1].strip().replace(',', '.')),
             error_probability=float(lines[2].strip().replace(',', '.')),

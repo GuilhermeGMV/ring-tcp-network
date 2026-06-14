@@ -1,5 +1,5 @@
-from config import load_config
+from node import create_node
 
 if __name__ == "__main__":
-    config = load_config('init.txt')
-    print(config)
+    node = create_node('init.txt')
+    node.start()
