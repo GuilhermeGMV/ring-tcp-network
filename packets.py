@@ -3,19 +3,34 @@ HELLO = "20"
 TOKEN = "1000"
 DATA = "2000"
 
+MACHINE_NOT_FOUND = "maquinainexistente"
+ACK = "ACK"
+NAK = "NAK"
+BROADCAST = "BROADCAST"
+
+
 def build_discover(nickname: str, ip: str) -> str:
     return f"{DISCOVER}:{nickname}:{ip}"
+
 
 def build_hello(nickname: str, ip: str) -> str:
     return f"{HELLO}:{nickname}:{ip}"
 
+
 def build_token() -> str:
     return f"{TOKEN}"
+
 
 def build_data(origin, destination, control, crc, message) -> str:
     return f"{DATA}:{origin}:{destination}:{control}:{crc}:{message}"
 
+
 def parse_packet(raw: str):
+    if raw == TOKEN:
+        return {
+            'type': TOKEN
+        }
+
     parts = raw.split(':', 1)
     packet_type = parts[0]
 
@@ -43,10 +58,6 @@ def parse_packet(raw: str):
             'type': HELLO,
             'nickname': rest[0],
             'ip': rest[1]
-        }
-    elif packet_type == TOKEN:
-        return {
-            'type': TOKEN
         }
     else:
         raise ValueError("Unknown packet type")

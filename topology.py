@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+
 @dataclass
 class Topology:
     machines: dict[str, str]
