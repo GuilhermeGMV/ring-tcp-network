@@ -70,24 +70,35 @@ class Node:
         return udp_socket
 
     def _get_local_ip(self):
-        udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            udp_socket.connect(("8.8.8.8", 80))
-            return udp_socket.getsockname()[0]
-        except OSError:
+        for target in (("8.8.8.8", 80), ("1.1.1.1", 80), ("255.255.255.255", PORT)):
+            udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
-                return socket.gethostbyname(socket.gethostname())
+                if target[0] == "255.255.255.255":
+                    udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                udp_socket.connect(target)
+                ip = udp_socket.getsockname()[0]
+                if ip and not ip.startswith("127."):
+                    return ip
             except OSError:
-                return "127.0.0.1"
-        finally:
-            udp_socket.close()
+                pass
+            finally:
+                udp_socket.close()
+
+        try:
+            for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
+                if not ip.startswith("127."):
+                    return ip
+        except OSError:
+            pass
+
+        return "127.0.0.1"
 
     def listen(self):
         while self.running:
             try:
-                data, _ = self.socket.recvfrom(65535)
+                data, address = self.socket.recvfrom(65535)
                 packet = parse_packet(data.decode())
-                self._handle_packet(packet)
+                self._handle_packet(packet, address[0])
             except socket.timeout:
                 continue
             except OSError:
@@ -96,13 +107,12 @@ class Node:
                 ui.log(self.nickname, f"pacote ignorado: {error}")
 
 
-    def _handle_packet(self, packet):
-        
+    def _handle_packet(self, packet, source_ip):
         if packet["type"] == DISCOVER:
-            self._handle_discover(packet)
+            self._handle_discover(packet, source_ip)
 
         elif packet["type"] == HELLO:
-            self._add_machine(packet["nickname"], packet["ip"])
+            self._add_machine(packet["nickname"], self._packet_ip(packet, source_ip))
 
         elif packet["type"] == TOKEN:
             self._handle_token()
@@ -110,17 +120,18 @@ class Node:
         elif packet["type"] == DATA:
             self._handle_data(packet)
 
-    
-    def _handle_discover(self, packet):
+    def _handle_discover(self, packet, source_ip):
         # pula se tiver o mesmo nickname
         if packet["nickname"] == self.nickname:
             return
 
         # salva na topologia
-        self._add_machine(packet["nickname"], packet["ip"])
-        # responde com HELLO
+        remote_ip = self._packet_ip(packet, source_ip)
+        self._add_machine(packet["nickname"], remote_ip)
+        # responde com HELLO direto para o remetente e tambem por broadcast
+        self._send_direct(build_hello(self.nickname, self.ip), remote_ip)
         self._broadcast(build_hello(self.nickname, self.ip))
-        ui.log(self.nickname, "HELLO enviado")
+        ui.log(self.nickname, f"HELLO enviado para {packet['nickname']}")
 
 
     def _add_machine(self, nickname, ip):
@@ -207,7 +218,7 @@ class Node:
         elif packet["destination"] == BROADCAST:
             ui.log(self.nickname, f"broadcast de {packet['origin']}: {packet['message']}")
             self._forward_data(packet)
-            
+
         else:
             self._forward_data(packet)
 
@@ -274,7 +285,31 @@ class Node:
 
 
     def _broadcast(self, packet):
-        self.socket.sendto(packet.encode(), ("255.255.255.255", PORT))
+        for address in self._broadcast_addresses():
+            try:
+                self.socket.sendto(packet.encode(), (address, PORT))
+            except OSError as error:
+                ui.log(self.nickname, f"broadcast para {address} falhou: {error}")
+
+
+    def _send_direct(self, packet, ip):
+        self.socket.sendto(packet.encode(), (ip, PORT))
+
+
+    def _broadcast_addresses(self):
+        addresses = ["255.255.255.255"]
+        parts = self.ip.split(".")
+        if len(parts) == 4 and not self.ip.startswith("127."):
+            subnet_broadcast = ".".join(parts[:3] + ["255"])
+            if subnet_broadcast not in addresses:
+                addresses.append(subnet_broadcast)
+        return addresses
+
+
+    def _packet_ip(self, packet, source_ip):
+        if source_ip and not source_ip.startswith("127."):
+            return source_ip
+        return packet["ip"]
 
 
     def monitor_token(self):
