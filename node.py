@@ -1,11 +1,15 @@
 from dataclasses import dataclass
-import fcntl
 import ipaddress
 from queue import Queue
 import socket
 import struct
 import threading
 import time
+
+try:
+    import fcntl
+except ModuleNotFoundError:
+    fcntl = None
 
 from crc import calculate_crc, is_valid_crc
 from fault import maybe_corrupt
@@ -312,6 +316,9 @@ class Node:
 
 
     def _get_broadcast_address(self):
+        if fcntl is None:
+            return None
+
         interface_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             for _, interface in socket.if_nameindex():
