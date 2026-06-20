@@ -1,6 +1,9 @@
 from dataclasses import dataclass
+import fcntl
+import ipaddress
 from queue import Queue
 import socket
+import struct
 import threading
 import time
 
@@ -26,7 +29,10 @@ import ui
 
 
 PORT = 6000
-DISCOVERY_TIME = 2
+DISCOVERY_ATTEMPTS = 3
+DISCOVERY_INTERVAL = 1
+SIOCGIFADDR = 0x8915
+SIOCGIFNETMASK = 0x891B
 
 
 @dataclass
@@ -52,10 +58,12 @@ class Node:
         threading.Thread(target=self.monitor_token, daemon=True).start()
 
         ui.log(self.nickname, f"iniciado em {self.ip}:{PORT}")
-        self._broadcast(build_discover(self.nickname, self.ip))
-        ui.log(self.nickname, "DISCOVER enviado")
+        ui.log(self.nickname, f"broadcast local: {self._broadcast_addresses()[0]}")
+        for attempt in range(DISCOVERY_ATTEMPTS):
+            self._broadcast(build_discover(self.nickname, self.ip))
+            ui.log(self.nickname, f"DISCOVER enviado ({attempt + 1}/{DISCOVERY_ATTEMPTS})")
+            time.sleep(DISCOVERY_INTERVAL)
 
-        time.sleep(DISCOVERY_TIME)
         self._create_first_token_if_needed()
 
         ui.show_help()
@@ -297,13 +305,39 @@ class Node:
 
 
     def _broadcast_addresses(self):
-        addresses = ["255.255.255.255"]
-        parts = self.ip.split(".")
-        if len(parts) == 4 and not self.ip.startswith("127."):
-            subnet_broadcast = ".".join(parts[:3] + ["255"])
-            if subnet_broadcast not in addresses:
-                addresses.append(subnet_broadcast)
-        return addresses
+        broadcast = self._get_broadcast_address()
+        if broadcast:
+            return [broadcast]
+        return ["255.255.255.255"]
+
+
+    def _get_broadcast_address(self):
+        interface_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            for _, interface in socket.if_nameindex():
+                request = struct.pack("256s", interface[:15].encode())
+                try:
+                    address_data = fcntl.ioctl(
+                        interface_socket.fileno(), SIOCGIFADDR, request
+                    )
+                    interface_ip = socket.inet_ntoa(address_data[20:24])
+                    if interface_ip != self.ip:
+                        continue
+
+                    netmask_data = fcntl.ioctl(
+                        interface_socket.fileno(), SIOCGIFNETMASK, request
+                    )
+                    netmask = socket.inet_ntoa(netmask_data[20:24])
+                    network = ipaddress.IPv4Network(
+                        f"{self.ip}/{netmask}", strict=False
+                    )
+                    return str(network.broadcast_address)
+                except OSError:
+                    continue
+        finally:
+            interface_socket.close()
+
+        return None
 
 
     def _packet_ip(self, packet, source_ip):
