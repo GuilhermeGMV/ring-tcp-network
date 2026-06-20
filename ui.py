@@ -1,5 +1,49 @@
+from datetime import datetime
+from pathlib import Path
+from threading import Lock
+
+
+LOG_DIRECTORY = Path("logs")
+LOG_LOCK = Lock()
+
+
+def _log_path(nickname: str) -> Path:
+    filename = "".join(
+        character if character.isalnum() or character in "-_" else "_"
+        for character in nickname
+    )
+    return LOG_DIRECTORY / f"{filename or 'node'}.log"
+
+
+def start_log(nickname: str) -> Path:
+    path = _log_path(nickname)
+    LOG_DIRECTORY.mkdir(exist_ok=True)
+    path.write_text("", encoding="utf-8")
+    return path.resolve()
+
+
 def log(nickname: str, message: str) -> None:
-    print(f"[{nickname}] {message}", flush=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    line = f"[{timestamp}] [{nickname}] {message}\n"
+    with LOG_LOCK:
+        with _log_path(nickname).open("a", encoding="utf-8") as log_file:
+            log_file.write(line)
+
+
+def show_message(message: str) -> None:
+    print(message, flush=True)
+
+
+def show_logs(nickname: str, line_count: int = 20) -> None:
+    path = _log_path(nickname)
+    if not path.exists():
+        print("Nenhum log registrado.")
+        return
+
+    with LOG_LOCK:
+        lines = path.read_text(encoding="utf-8").splitlines()
+
+    print("\n".join(lines[-line_count:]) or "Nenhum log registrado.")
 
 
 def show_help() -> None:
@@ -10,6 +54,7 @@ def show_help() -> None:
         "  token remover\n"
         "  topologia\n"
         "  fila\n"
+        "  logs\n"
         "  ajuda\n"
         "  sair\n"
     )

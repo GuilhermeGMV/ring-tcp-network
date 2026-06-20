@@ -1,11 +1,15 @@
 from dataclasses import dataclass
-import fcntl
 import ipaddress
 from queue import Queue
 import socket
 import struct
 import threading
 import time
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 from crc import calculate_crc, is_valid_crc
 from fault import maybe_corrupt
@@ -33,6 +37,12 @@ DISCOVERY_ATTEMPTS = 3
 DISCOVERY_INTERVAL = 1
 SIOCGIFADDR = 0x8915
 SIOCGIFNETMASK = 0x891B
+PACKET_LABELS = {
+    DISCOVER: "DISCOVER",
+    HELLO: "HELLO",
+    TOKEN: "TOKEN",
+    DATA: "DADOS",
+}
 
 
 @dataclass
@@ -54,6 +64,7 @@ class Node:
         self.controls_token = False
         self.last_token_time = None
 
+        log_path = ui.start_log(self.nickname)
         threading.Thread(target=self.listen, daemon=True).start()
         threading.Thread(target=self.monitor_token, daemon=True).start()
 
@@ -66,6 +77,7 @@ class Node:
 
         self._create_first_token_if_needed()
 
+        ui.show_message(f"Logs de rede: {log_path}")
         ui.show_help()
         self._command_loop()
 
@@ -106,6 +118,12 @@ class Node:
             try:
                 data, address = self.socket.recvfrom(65535)
                 packet = parse_packet(data.decode())
+                label = PACKET_LABELS.get(packet["type"], packet["type"])
+                ui.log(
+                    self.nickname,
+                    f"UDP recebido {label} <- {address[0]}:{address[1]} "
+                    f"({len(data)} bytes)",
+                )
                 self._handle_packet(packet, address[0])
             except socket.timeout:
                 continue
@@ -288,20 +306,64 @@ class Node:
     def _send_to_successor(self, packet, label):
         time.sleep(self.token_data_time)
         successor, ip = self.topology.get_successor(self.nickname)
-        self.socket.sendto(packet.encode(), (ip, PORT))
-        ui.log(self.nickname, f"{label} enviado para {successor}")
+        ui.log(
+            self.nickname,
+            f"UDP enviando {label} -> {successor} ({ip}:{PORT})",
+        )
+        try:
+            sent_bytes = self.socket.sendto(packet.encode(), (ip, PORT))
+            ui.log(
+                self.nickname,
+                f"UDP enviado {label} -> {successor} ({ip}:{PORT}) "
+                f"({sent_bytes} bytes)",
+            )
+        except OSError as error:
+            ui.log(
+                self.nickname,
+                f"UDP falhou {label} -> {successor} ({ip}:{PORT}): {error}",
+            )
+            raise
 
 
     def _broadcast(self, packet):
+        packet_type = packet.split(":", 1)[0]
+        label = PACKET_LABELS.get(packet_type, packet_type)
         for address in self._broadcast_addresses():
+            ui.log(
+                self.nickname,
+                f"UDP enviando {label} por broadcast -> {address}:{PORT}",
+            )
             try:
-                self.socket.sendto(packet.encode(), (address, PORT))
+                sent_bytes = self.socket.sendto(packet.encode(), (address, PORT))
+                ui.log(
+                    self.nickname,
+                    f"UDP enviado {label} por broadcast -> {address}:{PORT} "
+                    f"({sent_bytes} bytes)",
+                )
             except OSError as error:
-                ui.log(self.nickname, f"broadcast para {address} falhou: {error}")
+                ui.log(
+                    self.nickname,
+                    f"UDP falhou {label} por broadcast -> {address}:{PORT}: {error}",
+                )
 
 
     def _send_direct(self, packet, ip):
-        self.socket.sendto(packet.encode(), (ip, PORT))
+        packet_type = packet.split(":", 1)[0]
+        label = PACKET_LABELS.get(packet_type, packet_type)
+        ui.log(self.nickname, f"UDP enviando {label} por unicast -> {ip}:{PORT}")
+        try:
+            sent_bytes = self.socket.sendto(packet.encode(), (ip, PORT))
+            ui.log(
+                self.nickname,
+                f"UDP enviado {label} por unicast -> {ip}:{PORT} "
+                f"({sent_bytes} bytes)",
+            )
+        except OSError as error:
+            ui.log(
+                self.nickname,
+                f"UDP falhou {label} por unicast -> {ip}:{PORT}: {error}",
+            )
+            raise
 
 
     def _broadcast_addresses(self):
@@ -312,6 +374,20 @@ class Node:
 
 
     def _get_broadcast_address(self):
+        netmask = self._get_netmask()
+        if not netmask:
+            return None
+
+        network = ipaddress.IPv4Network(
+            f"{self.ip}/{netmask}", strict=False
+        )
+        return str(network.broadcast_address)
+
+
+    def _get_netmask(self):
+        if fcntl is None:
+            return self._get_windows_netmask()
+
         interface_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             for _, interface in socket.if_nameindex():
@@ -327,15 +403,72 @@ class Node:
                     netmask_data = fcntl.ioctl(
                         interface_socket.fileno(), SIOCGIFNETMASK, request
                     )
-                    netmask = socket.inet_ntoa(netmask_data[20:24])
-                    network = ipaddress.IPv4Network(
-                        f"{self.ip}/{netmask}", strict=False
-                    )
-                    return str(network.broadcast_address)
+                    return socket.inet_ntoa(netmask_data[20:24])
                 except OSError:
                     continue
         finally:
             interface_socket.close()
+
+        return None
+
+
+    def _get_windows_netmask(self):
+        import ctypes
+        from ctypes import wintypes
+
+        class IpAddressString(ctypes.Structure):
+            pass
+
+        ip_address_pointer = ctypes.POINTER(IpAddressString)
+        IpAddressString._fields_ = [
+            ("next", ip_address_pointer),
+            ("ip_address", ctypes.c_char * 16),
+            ("ip_mask", ctypes.c_char * 16),
+            ("context", wintypes.DWORD),
+        ]
+
+        class AdapterInfo(ctypes.Structure):
+            pass
+
+        adapter_pointer = ctypes.POINTER(AdapterInfo)
+        AdapterInfo._fields_ = [
+            ("next", adapter_pointer),
+            ("combo_index", wintypes.DWORD),
+            ("adapter_name", ctypes.c_char * 260),
+            ("description", ctypes.c_char * 132),
+            ("address_length", wintypes.UINT),
+            ("address", ctypes.c_ubyte * 8),
+            ("index", wintypes.DWORD),
+            ("type", wintypes.UINT),
+            ("dhcp_enabled", wintypes.UINT),
+            ("current_ip_address", ip_address_pointer),
+            ("ip_address_list", IpAddressString),
+        ]
+
+        size = wintypes.ULONG()
+        get_adapters_info = ctypes.windll.iphlpapi.GetAdaptersInfo
+        get_adapters_info.argtypes = [adapter_pointer, ctypes.POINTER(wintypes.ULONG)]
+        get_adapters_info.restype = wintypes.ULONG
+        result = get_adapters_info(None, ctypes.byref(size))
+        if result not in (0, 111) or size.value == 0:
+            return None
+
+        buffer = ctypes.create_string_buffer(size.value)
+        adapter = ctypes.cast(buffer, adapter_pointer)
+
+        if get_adapters_info(adapter, ctypes.byref(size)) != 0:
+            return None
+
+        while adapter:
+            address = adapter.contents.ip_address_list
+            while True:
+                ip = address.ip_address.decode()
+                if ip == self.ip:
+                    return address.ip_mask.decode()
+                if not address.next:
+                    break
+                address = address.next.contents
+            adapter = adapter.contents.next
 
         return None
 
@@ -373,15 +506,20 @@ class Node:
                 ui.show_topology(self.topology.machines)
             elif command == "fila":
                 ui.show_queue(list(self.queue.queue))
+            elif command == "logs":
+                ui.show_logs(self.nickname)
             elif command == "token adicionar":
                 self._send_to_successor(build_token(), "TOKEN")
+                ui.show_message("TOKEN enviado. Detalhes no log.")
             elif command == "token remover":
                 self.remove_token = True
                 ui.log(self.nickname, "o proximo TOKEN sera removido")
+                ui.show_message("O próximo TOKEN será removido.")
             elif command.startswith("mensagem "):
                 self._add_message(command)
             else:
                 ui.log(self.nickname, "comando desconhecido")
+                ui.show_message("Comando desconhecido. Digite ajuda.")
 
         self.running = False
         self.socket.close()
@@ -391,10 +529,12 @@ class Node:
         parts = command.split(" ", 2)
         if len(parts) < 3:
             ui.log(self.nickname, "uso: mensagem <destino|BROADCAST> <texto>")
+            ui.show_message("Uso: mensagem <destino|BROADCAST> <texto>")
             return
 
         if self.queue.full():
             ui.log(self.nickname, "fila cheia")
+            ui.show_message("Fila cheia.")
             return
 
         self.queue.put({
@@ -403,6 +543,7 @@ class Node:
             "tries": 0,
         })
         ui.log(self.nickname, f"mensagem para {parts[1]} adicionada")
+        ui.show_message(f"Mensagem para {parts[1]} adicionada à fila.")
 
 
     def _ring_text(self):
