@@ -214,11 +214,11 @@ class Node:
         ui.log(self.nickname, data_message)            
 
         if packet["origin"] == self.nickname:
-            ui.show_message(f"mensagem de {packet['origin']}: {data_message}")
+            ui.show_message(f"mensagem recebida de volta: {data_message}")
             self._handle_returned_data(packet)
 
         elif packet["destination"] == self.nickname:
-            ui.show_message(f"mensagem recebida de volta: {data_message}")
+            ui.show_message(f"mensagem de {packet['origin']}: {data_message}")
             self._handle_my_data(packet)
 
         elif packet["destination"] == BROADCAST:
