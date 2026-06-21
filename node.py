@@ -211,15 +211,14 @@ class Node:
             f"DADOS {packet['origin']} -> {packet['destination']} "
             f"[control={packet['control']}]"
         )
-        ui.log(self.nickname, data_message)
-
-        if packet["destination"] == self.nickname or packet["origin"] == self.nickname:
-            ui.show_message(f"mensagem de {packet['origin']}: {data_message}")
+        ui.log(self.nickname, data_message)            
 
         if packet["origin"] == self.nickname:
+            ui.show_message(f"mensagem de {packet['origin']}: {data_message}")
             self._handle_returned_data(packet)
 
         elif packet["destination"] == self.nickname:
+            ui.show_message(f"mensagem recebida de volta: {data_message}")
             self._handle_my_data(packet)
 
         elif packet["destination"] == BROADCAST:
