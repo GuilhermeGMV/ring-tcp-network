@@ -189,6 +189,7 @@ class Node:
         message = item["message"]
         crc = calculate_crc(message)
 
+        # só corrompe se for a primeira tentativa e for unicast
         if item["destination"] != BROADCAST and item["tries"] == 0:
             message = maybe_corrupt(message, self.error_probability)
 
@@ -285,6 +286,7 @@ class Node:
 
 
     def _send_to_successor(self, packet, label):
+        # sleep do tempo entre receber o token e enviar dados
         time.sleep(self.token_data_time)
         successor, ip = self.topology.get_successor(self.nickname)
         ui.log(
