@@ -138,7 +138,7 @@ class Node:
             self._handle_discover(packet, source_ip)
 
         elif packet["type"] == HELLO:
-            self._add_machine(packet["nickname"], self._packet_ip(packet, source_ip))
+            self._add_machine(packet["nickname"], packet["ip"])
 
         elif packet["type"] == TOKEN:
             self._handle_token()
@@ -152,7 +152,7 @@ class Node:
             return
 
         # salva na topologia
-        remote_ip = self._packet_ip(packet, source_ip)
+        remote_ip = packet["ip"]
         self._add_machine(packet["nickname"], remote_ip)
         # responde com HELLO direto para o remetente e tambem por broadcast
         self._send_direct(build_hello(self.nickname, self.ip), remote_ip)
@@ -476,13 +476,6 @@ class Node:
             adapter = adapter.contents.next
 
         return None
-
-
-    def _packet_ip(self, packet, source_ip):
-        if source_ip and not source_ip.startswith("127."):
-            return source_ip
-        return packet["ip"]
-
 
     def monitor_token(self):
         while self.running:
