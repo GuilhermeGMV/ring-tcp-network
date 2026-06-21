@@ -208,6 +208,7 @@ class Node:
 
     def _handle_data(self, packet):
         data_message = (
+            f":{packet['message']}"
             f"DADOS {packet['origin']} -> {packet['destination']} "
             f"[control={packet['control']}]"
         )
