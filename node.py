@@ -13,6 +13,7 @@ except ImportError:
 
 from crc import calculate_crc, is_valid_crc
 from fault import maybe_corrupt
+from listener import listen
 from packets import (
     ACK,
     BROADCAST,
@@ -21,13 +22,14 @@ from packets import (
     HELLO,
     MACHINE_NOT_FOUND,
     NAK,
+    PACKET_LABELS,
     TOKEN,
     build_data,
     build_discover,
     build_hello,
     build_token,
-    parse_packet,
 )
+from token_monitor import monitor_token
 from topology import Topology
 import ui
 
@@ -37,12 +39,6 @@ DISCOVERY_ATTEMPTS = 3
 DISCOVERY_INTERVAL = 1
 SIOCGIFADDR = 0x8915
 SIOCGIFNETMASK = 0x891B
-PACKET_LABELS = {
-    DISCOVER: "DISCOVER",
-    HELLO: "HELLO",
-    TOKEN: "TOKEN",
-    DATA: "DADOS",
-}
 
 
 @dataclass
@@ -65,8 +61,8 @@ class Node:
         self.last_token_time = None
 
         log_path = ui.start_log(self.nickname)
-        threading.Thread(target=self.listen, daemon=True).start()
-        threading.Thread(target=self.monitor_token, daemon=True).start()
+        threading.Thread(target=listen, args=(self,), daemon=True).start()
+        threading.Thread(target=monitor_token, args=(self,), daemon=True).start()
 
         ui.log(self.nickname, f"iniciado em {self.ip}:{PORT}")
         ui.log(self.nickname, f"broadcast local: {self._broadcast_addresses()[0]}")
@@ -113,32 +109,12 @@ class Node:
 
         return "127.0.0.1"
 
-    def listen(self):
-        while self.running:
-            try:
-                data, address = self.socket.recvfrom(65535)
-                packet = parse_packet(data.decode())
-                label = PACKET_LABELS.get(packet["type"], packet["type"])
-                ui.log(
-                    self.nickname,
-                    f"UDP recebido {label} <- {address[0]}:{address[1]} "
-                    f"({len(data)} bytes)",
-                )
-                self._handle_packet(packet, address[0])
-            except socket.timeout:
-                continue
-            except OSError:
-                break
-            except Exception as error:
-                ui.log(self.nickname, f"pacote ignorado: {error}")
-
-
     def _handle_packet(self, packet, source_ip):
         if packet["type"] == DISCOVER:
             self._handle_discover(packet, source_ip)
 
         elif packet["type"] == HELLO:
-            self._add_machine(packet["nickname"], self._packet_ip(packet, source_ip))
+            self._add_machine(packet["nickname"], packet["ip"])
 
         elif packet["type"] == TOKEN:
             self._handle_token()
@@ -152,7 +128,7 @@ class Node:
             return
 
         # salva na topologia
-        remote_ip = self._packet_ip(packet, source_ip)
+        remote_ip = packet["ip"]
         self._add_machine(packet["nickname"], remote_ip)
         # responde com HELLO direto para o remetente e tambem por broadcast
         self._send_direct(build_hello(self.nickname, self.ip), remote_ip)
@@ -213,6 +189,7 @@ class Node:
         message = item["message"]
         crc = calculate_crc(message)
 
+        # só corrompe se for a primeira tentativa e for unicast
         if item["destination"] != BROADCAST and item["tries"] == 0:
             message = maybe_corrupt(message, self.error_probability)
 
@@ -230,10 +207,14 @@ class Node:
 
 
     def _handle_data(self, packet):
-        ui.log(
-            self.nickname,
-            f"DADOS {packet['origin']} -> {packet['destination']} [{packet['control']}]",
+        data_message = (
+            f"DADOS {packet['origin']} -> {packet['destination']} "
+            f"[control={packet['control']}]"
         )
+        ui.log(self.nickname, data_message)
+
+        if packet["destination"] == self.nickname or packet["origin"] == self.nickname:
+            ui.show_message(f"mensagem de {packet['origin']}: {data_message}")
 
         if packet["origin"] == self.nickname:
             self._handle_returned_data(packet)
@@ -243,6 +224,7 @@ class Node:
 
         elif packet["destination"] == BROADCAST:
             ui.log(self.nickname, f"broadcast de {packet['origin']}: {packet['message']}")
+            ui.show_message(f"broadcast de {packet['origin']}: {packet['message']}")
             self._forward_data(packet)
 
         else:
@@ -304,6 +286,7 @@ class Node:
 
 
     def _send_to_successor(self, packet, label):
+        # sleep do tempo entre receber o token e enviar dados
         time.sleep(self.token_data_time)
         successor, ip = self.topology.get_successor(self.nickname)
         ui.log(
@@ -472,25 +455,6 @@ class Node:
 
         return None
 
-
-    def _packet_ip(self, packet, source_ip):
-        if source_ip and not source_ip.startswith("127."):
-            return source_ip
-        return packet["ip"]
-
-
-    def monitor_token(self):
-        while self.running:
-            time.sleep(0.5)
-            if not self.controls_token or self.last_token_time is None:
-                continue
-
-            if time.time() - self.last_token_time > self.token_timeout:
-                ui.log(self.nickname, "TOKEN perdido; gerando novo")
-                self.last_token_time = time.time()
-                self._send_to_successor(build_token(), "TOKEN")
-
-
     def _command_loop(self):
         while self.running:
             try:
@@ -498,24 +462,24 @@ class Node:
             except (EOFError, KeyboardInterrupt):
                 break
 
-            if command == "sair":
+            if command == "sair" or command == "exit":
                 break
-            elif command == "ajuda":
+            elif command == "ajuda" or command == "help":
                 ui.show_help()
-            elif command == "topologia":
+            elif command == "topologia" or command == "top":
                 ui.show_topology(self.topology.machines)
             elif command == "fila":
                 ui.show_queue(list(self.queue.queue))
             elif command == "logs":
                 ui.show_logs(self.nickname)
-            elif command == "token adicionar":
+            elif command == "token adicionar" or command == "token a":
                 self._send_to_successor(build_token(), "TOKEN")
                 ui.show_message("TOKEN enviado. Detalhes no log.")
-            elif command == "token remover":
+            elif command == "token remover" or command == "token r":
                 self.remove_token = True
                 ui.log(self.nickname, "o proximo TOKEN sera removido")
                 ui.show_message("O próximo TOKEN será removido.")
-            elif command.startswith("mensagem "):
+            elif command.startswith("mensagem ") or command.startswith("msg "):
                 self._add_message(command)
             else:
                 ui.log(self.nickname, "comando desconhecido")
