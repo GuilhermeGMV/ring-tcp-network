@@ -230,10 +230,14 @@ class Node:
 
 
     def _handle_data(self, packet):
-        ui.log(
-            self.nickname,
-            f"DADOS {packet['origin']} -> {packet['destination']} [{packet['control']}]",
+        data_message = (
+            f"DADOS {packet['origin']} -> {packet['destination']} "
+            f"[control={packet['control']}]"
         )
+        ui.log(self.nickname, data_message)
+
+        if packet["destination"] == self.nickname or packet["origin"] == self.nickname:
+            ui.show_message(f"mensagem de {packet['origin']}: {data_message}")
 
         if packet["origin"] == self.nickname:
             self._handle_returned_data(packet)
@@ -243,6 +247,7 @@ class Node:
 
         elif packet["destination"] == BROADCAST:
             ui.log(self.nickname, f"broadcast de {packet['origin']}: {packet['message']}")
+            ui.show_message(f"broadcast de {packet['origin']}: {packet['message']}")
             self._forward_data(packet)
 
         else:

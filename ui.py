@@ -31,7 +31,7 @@ def log(nickname: str, message: str) -> None:
 
 
 def show_message(message: str) -> None:
-    print(message, flush=True)
+    print(message + "\n>", flush=True)
 
 
 def show_logs(nickname: str, line_count: int = 20) -> None:
