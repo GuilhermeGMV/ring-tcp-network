@@ -8,6 +8,13 @@ ACK = "ACK"
 NAK = "NAK"
 BROADCAST = "BROADCAST"
 
+PACKET_LABELS = {
+    DISCOVER: "DISCOVER",
+    HELLO: "HELLO",
+    TOKEN: "TOKEN",
+    DATA: "DADOS",
+}
+
 
 def build_discover(nickname: str, ip: str) -> str:
     return f"{DISCOVER}:{nickname}:{ip}"
