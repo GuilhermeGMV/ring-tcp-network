@@ -129,20 +129,25 @@ class Node:
 
         # salva na topologia
         remote_ip = packet["ip"]
-        self._add_machine(packet["nickname"], remote_ip)
+        self._add_machine(packet["nickname"], remote_ip, replace=True)
         # responde com HELLO direto para o remetente e tambem por broadcast
         self._send_direct(build_hello(self.nickname, self.ip), remote_ip)
         self._broadcast(build_hello(self.nickname, self.ip))
         ui.log(self.nickname, f"HELLO enviado para {packet['nickname']}")
 
 
-    def _add_machine(self, nickname, ip):
+    def _add_machine(self, nickname, ip, replace=False):
         # pula se tiver o mesmo nickname
         if nickname == self.nickname:
             return
 
-        # se não tiver na topologia ou tiver com IP diferente, adiciona/atualiza
-        if self.topology.machines.get(nickname) != ip:
+        machine_exists = nickname in self.topology.machines
+        if replace and machine_exists:
+            self.topology.machines.pop(nickname)
+            ui.log(self.nickname, f"nodo {nickname} substituido por novo DISCOVER")
+
+        # DISCOVER sempre recadastra; HELLO apenas adiciona ou atualiza o IP.
+        if replace or self.topology.machines.get(nickname) != ip:
             self.topology.machines[nickname] = ip
             self._analyze_token_controller()
             ui.log(self.nickname, f"topologia: {self._ring_text()}")
@@ -541,7 +546,7 @@ class Node:
             "tries": 0,
         })
         ui.log(self.nickname, f"mensagem para {parts[1]} adicionada")
-        ui.show_message(f"Mensagem para {parts[1]} adicionada à fila.")
+        ui.show_message(f"Mensagem para {parts[1]} adicionada à fila.", next=True)
 
 
     def _ring_text(self):
