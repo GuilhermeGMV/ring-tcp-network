@@ -49,6 +49,7 @@ class Node:
     token_timeout: float
     min_token_interval: float
 
+    # inicia o nodo, cria socket, threads de listener e monitor de token, envia DISCOVER e entra no loop de comandos
     def start(self):
         self.ip = self._get_local_ip()
         self.topology = Topology({self.nickname: self.ip})
@@ -61,20 +62,25 @@ class Node:
         self.last_token_time = None
 
         log_path = ui.start_log(self.nickname)
+        # iniciando as threads
         threading.Thread(target=listen, args=(self,), daemon=True).start()
         threading.Thread(target=monitor_token, args=(self,), daemon=True).start()
 
         ui.log(self.nickname, f"iniciado em {self.ip}:{PORT}")
         ui.log(self.nickname, f"broadcast local: {self._broadcast_addresses()[0]}")
+
+        # tenta fazer DISCOVER algumas vezes, caso não haja resposta de outros nodos
         for attempt in range(DISCOVERY_ATTEMPTS):
             self._broadcast(build_discover(self.nickname, self.ip))
             ui.log(self.nickname, f"DISCOVER enviado ({attempt + 1}/{DISCOVERY_ATTEMPTS})")
             time.sleep(DISCOVERY_INTERVAL)
 
+        # verifica se é o controlador do token e cria o token inicial se necessário
         self._create_first_token_if_needed()
 
         ui.show_message(f"Logs de rede: {log_path}")
         ui.show_help()
+        # loop que recebe os comandos do usuário
         self._command_loop()
 
     def _create_socket(self):
@@ -86,20 +92,24 @@ class Node:
         return udp_socket
 
     def _get_local_ip(self):
+        # loop pelos dns google, cloudflare e broadcast
         for target in (("8.8.8.8", 80), ("1.1.1.1", 80), ("255.255.255.255", PORT)):
+            # manda um pacote UDP para o destino e pega o IP local usado para isso
             udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
+                # libera o broadcast se for o caso
                 if target[0] == "255.255.255.255":
                     udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
                 udp_socket.connect(target)
                 ip = udp_socket.getsockname()[0]
+                # tenta evitar 127.x.x.x (loopback)
                 if ip and not ip.startswith("127."):
                     return ip
             except OSError:
                 pass
             finally:
                 udp_socket.close()
-
+        # fallback que pega o loopback
         try:
             for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
                 if not ip.startswith("127."):
@@ -109,6 +119,7 @@ class Node:
 
         return "127.0.0.1"
 
+    # recebe os pacotes e chama o handler apropriado
     def _handle_packet(self, packet, source_ip):
         if packet["type"] == DISCOVER:
             self._handle_discover(packet, source_ip)
@@ -178,11 +189,13 @@ class Node:
     def _handle_token(self):
         ui.log(self.nickname, "TOKEN recebido")
 
+        # remove se tiver sido solicitado por comando
         if self.remove_token:
             self.remove_token = False
             ui.log(self.nickname, "TOKEN retirado do anel")
             return
 
+        # verifica se é um TOKEN duplicado (mais de um TOKEN no anel) e ignora se for o caso
         if self.controls_token:
             now = time.time()
             if self.last_token_time is not None:
@@ -191,11 +204,11 @@ class Node:
                     ui.log(self.nickname, "mais de um TOKEN detectado; retirando este")
                     return
             self.last_token_time = now
-
+        # se mandou mensagem e espera o retorno do ACK/NAK, só repassa o token
         if self.waiting_data:
             self._send_to_successor(build_token(), "TOKEN")
             return
-
+        # se não tem mensagens pra enviar, só repassa o token
         if self.queue.empty():
             self._send_to_successor(build_token(), "TOKEN")
             return
@@ -265,7 +278,8 @@ class Node:
 
     def _handle_returned_data(self, packet):
         if self.queue.empty():
-            self._release_token()
+            self.waiting_data = False
+            self._send_to_successor(build_token(), "TOKEN")
             return
 
         item = self.queue.queue[0]
@@ -285,7 +299,8 @@ class Node:
             ui.log(self.nickname, f"maquina {item['destination']} inexistente")
             self.queue.get()
 
-        self._release_token()
+        self.waiting_data = False
+        self._send_to_successor(build_token(), "TOKEN")
 
 
     def _forward_data(self, packet):
@@ -299,14 +314,9 @@ class Node:
         self._send_to_successor(raw, "DADOS")
 
 
-    def _release_token(self):
-        self.waiting_data = False
-        self._send_to_successor(build_token(), "TOKEN")
-
-
     def _send_to_successor(self, packet, label):
-        # O controlador dita o ritmo do TOKEN. Os demais nodos precisam
-        # repassá-lo imediatamente para o tempo da volta não crescer a cada nodo.
+        # se eu controlo o token, ou estou enviado um pacote que não é token, envio com delay
+        # o envio do token é imediato, para evitar que o token fique preso e o tempo estoure
         if label != "TOKEN" or self.controls_token:
             threading.Thread(
                 target=self._send_to_successor_after_delay,
@@ -327,12 +337,14 @@ class Node:
 
 
     def _send_to_successor_now(self, packet, label):
+        # pega o IP do sucessor na topologia
         successor, ip = self.topology.get_successor(self.nickname)
         ui.log(
             self.nickname,
             f"UDP enviando {label} -> {successor} ({ip}:{PORT})",
         )
         try:
+            # envia o pacote para o sucessor
             sent_bytes = self.socket.sendto(packet.encode(), (ip, PORT))
             ui.log(
                 self.nickname,
@@ -389,24 +401,19 @@ class Node:
 
 
     def _broadcast_addresses(self):
-        broadcast = self._get_broadcast_address()
-        if broadcast:
-            return [broadcast]
-        return ["255.255.255.255"]
-
-
-    def _get_broadcast_address(self):
+        # pega a mascara da rede
         netmask = self._get_netmask()
         if not netmask:
-            return None
-
+            return ["255.255.255.255"]
+        # calcula o endereço de broadcast a partir do IP e mascara
         network = ipaddress.IPv4Network(
             f"{self.ip}/{netmask}", strict=False
         )
-        return str(network.broadcast_address)
+        return [str(network.broadcast_address)]
 
 
     def _get_netmask(self):
+        # pega a mascara da rede
         if fcntl is None:
             return self._get_windows_netmask()
 
@@ -529,6 +536,7 @@ class Node:
 
 
     def _add_message(self, command):
+        # verificações da mensagem
         parts = command.split(" ", 2)
         if len(parts) < 3:
             ui.log(self.nickname, "uso: mensagem <destino|BROADCAST> <texto>")
@@ -539,7 +547,7 @@ class Node:
             ui.log(self.nickname, "fila cheia")
             ui.show_message("Fila cheia.")
             return
-
+        # adiciona a mensagem
         self.queue.put({
             "destination": parts[1],
             "message": parts[2],
