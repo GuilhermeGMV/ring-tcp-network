@@ -3,7 +3,7 @@ import time
 from packets import build_token
 import ui
 
-
+# thread que monitora o tempo desde o último TOKEN recebido e gera um novo se passar do limite
 def monitor_token(node):
     while node.running:
         time.sleep(0.5)

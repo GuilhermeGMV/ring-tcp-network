@@ -32,6 +32,7 @@ def build_data(origin, destination, control, crc, message) -> str:
     return f"{DATA}:{origin}:{destination}:{control}:{crc}:{message}"
 
 
+# recebe uma string e retorna um dicionário com os campos do pacote
 def parse_packet(raw: str):
     if raw == TOKEN:
         return {
