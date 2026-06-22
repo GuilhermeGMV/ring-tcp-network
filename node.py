@@ -144,16 +144,30 @@ class Node:
         # se não tiver na topologia ou tiver com IP diferente, adiciona/atualiza
         if self.topology.machines.get(nickname) != ip:
             self.topology.machines[nickname] = ip
+            self._analyze_token_controller()
             ui.log(self.nickname, f"topologia: {self._ring_text()}")
 
 
+    def _analyze_token_controller(self):
+        controller = sorted(self.topology.machines)[0]
+        was_controller = self.controls_token
+        self.controls_token = controller == self.nickname
+
+        if not self.controls_token:
+            self.last_token_time = None
+
+        if self.controls_token != was_controller:
+            ui.log(self.nickname, f"controle do TOKEN: {controller}")
+
+
     def _create_first_token_if_needed(self):
-        first = sorted(self.topology.machines)[0]
-        if first == self.nickname:
-            self.controls_token = True
-            self.last_token_time = time.time()
-            ui.log(self.nickname, "gerando TOKEN inicial")
-            self._send_to_successor(build_token(), "TOKEN")
+        self._analyze_token_controller()
+        if not self.controls_token or self.last_token_time is not None:
+            return
+
+        self.last_token_time = time.time()
+        ui.log(self.nickname, "gerando TOKEN inicial")
+        self._send_to_successor(build_token(), "TOKEN")
 
 
     def _handle_token(self):
