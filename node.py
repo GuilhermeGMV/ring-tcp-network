@@ -300,8 +300,11 @@ class Node:
 
 
     def _send_to_successor(self, packet, label):
-        # sleep do tempo entre receber o token e enviar dados
-        time.sleep(self.token_data_time)
+        # O controlador dita o ritmo do TOKEN. Os demais nodos precisam
+        # repassá-lo imediatamente para o tempo da volta não crescer a cada nodo.
+        if label != "TOKEN" or self.controls_token:
+            time.sleep(self.token_data_time)
+
         successor, ip = self.topology.get_successor(self.nickname)
         ui.log(
             self.nickname,
