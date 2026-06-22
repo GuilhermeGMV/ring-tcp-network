@@ -222,7 +222,7 @@ class Node:
 
     def _handle_data(self, packet):
         data_message = (
-            f":{packet['message']}"
+            f"{packet['message']} "
             f"DADOS {packet['origin']} -> {packet['destination']} "
             f"[control={packet['control']}]"
         )
@@ -303,8 +303,25 @@ class Node:
         # O controlador dita o ritmo do TOKEN. Os demais nodos precisam
         # repassá-lo imediatamente para o tempo da volta não crescer a cada nodo.
         if label != "TOKEN" or self.controls_token:
-            time.sleep(self.token_data_time)
+            threading.Thread(
+                target=self._send_to_successor_after_delay,
+                args=(packet, label),
+                daemon=True,
+            ).start()
+            return
 
+        self._send_to_successor_now(packet, label)
+
+
+    def _send_to_successor_after_delay(self, packet, label):
+        time.sleep(self.token_data_time)
+        try:
+            self._send_to_successor_now(packet, label)
+        except OSError:
+            pass
+
+
+    def _send_to_successor_now(self, packet, label):
         successor, ip = self.topology.get_successor(self.nickname)
         ui.log(
             self.nickname,
