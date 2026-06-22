@@ -30,8 +30,10 @@ def log(nickname: str, message: str) -> None:
             log_file.write(line)
 
 
-def show_message(message: str) -> None:
+def show_message(message: str, next: bool = False) -> None:
     print(message, flush=True)
+    if not next:
+        print("> ", end="", flush=True)
 
 
 def show_logs(nickname: str, line_count: int = 20) -> None:

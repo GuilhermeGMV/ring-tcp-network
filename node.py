@@ -541,7 +541,7 @@ class Node:
             "tries": 0,
         })
         ui.log(self.nickname, f"mensagem para {parts[1]} adicionada")
-        ui.show_message(f"Mensagem para {parts[1]} adicionada à fila.")
+        ui.show_message(f"Mensagem para {parts[1]} adicionada à fila.", next=True)
 
 
     def _ring_text(self):
